@@ -177,7 +177,7 @@ Resources:
     Properties:
       ApiId: !Ref ApiGateway
       RouteKey: GET /clientes
-      AuthorizerId: !ref CognitoAuthorizer
+      AuthorizerId: !Ref CognitoAuthorizer
       Target: !Sub integrations/${ApiGatewayIntegration.ApiGatewayIntegrationId} # ?
 
   ApiGatewayResourcePost:
@@ -185,7 +185,7 @@ Resources:
     Properties:
       ApiId: !Ref ApiGateway
       RouteKey: POST /clientes
-      AuthorizerId: !ref CognitoAuthorizer
+      AuthorizerId: !Ref CognitoAuthorizer
       Target: !Sub integrations/${ApiGatewayIntegration.ApiGatewayIntegrationId} # ?
 
   ApiGatewayIamRole:
