@@ -2,38 +2,33 @@ package main
 
 import (
     "context"
-    "fmt"
     "log"
-    "coca-cola-lambda/internal/adapters/secretmanager"
-    "coca-cola-lambda/internal/adapters/storage"
-    "coca-cola-lambda/internal/config"
     "github.com/aws/aws-lambda-go/lambda"
+    "coca-cola-lambda/pkg/infraestructure/aws"
+    "coca-cola-lambda/pkg/infraestructure/database"
+    "coca-cola-lambda/pkg/domain/services"
+    "coca-cola-lambda/pkg/config"
 )
 
-func handleRequest(ctx context.Context) (string, error) {
-    secretName := config.GetEnv("SECRET_NAME", "secreto/prueba")
-    region := config.GetEnv("AWS_REGION", "us-east-1")
-    bucketName := config.GetEnv("BUCKET_NAME", "proyecto-prueba")
-    key := "aws.key"
-
-    sm := secretmanager.NewAWSSecretManager(region)
-    secret, err := sm.GetSecret(secretName)
-    if err != nil {
-        return "", fmt.Errorf("failed to get secret: %w", err)
-    }
-
-    s3 := storage.NewAWSS3(region)
-    content, err := s3.GetObject(bucketName, key)
-    if err != nil {
-        return "", fmt.Errorf("failed to get object from S3: %w", err)
-    }
-
-    log.Printf("Content from S3: %s", content)
-    log.Printf("Secret Username: %s", secret.Username)
-
-    return "Operation successful", nil
-}
-
 func main() {
-    lambda.Start(handleRequest)
+    // Cargar configuración
+    cfg, err := config.LoadConfig()
+    if err != nil {
+        log.Fatalf("Error loading config: %v", err)
+    }
+
+    // Inicializar adaptadores
+    s3Adapter := aws.NewS3Adapter(cfg.S3Bucket)
+    secretManagerAdapter := aws.NewSecretManagerAdapter()
+    dbAdapter := database.NewPostgresAdapter(cfg.DatabaseDSN)
+
+    // Inicializar servicio
+    clientService := services.NewClientService(s3Adapter, secretManagerAdapter, dbAdapter)
+
+    // Inicializar Lambda handler
+    handler := func(ctx context.Context) error {
+        return clientService.HandleRequest(ctx)
+    }
+
+    lambda.Start(handler)
 }
