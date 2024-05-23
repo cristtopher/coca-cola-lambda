@@ -1,0 +1,273 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Stack to deploy Coca-Cola's Lambda with ECR, RDS, Exist VPC, API Gateway, Cognito AuthorizerId and WAF
+
+Parameters:
+  VPCId:
+    Type: AWS::EC2::VPC::Id
+    Default: vpc-021d8d241087b2a6f
+    Description: vpc-producto
+  PrivateSubnet1ID:
+    Type: AWS::EC2::Subnet::Id
+    Default: subnet-0965b7e14b32f48fb
+    Description: vpc-producto-PrivateSubnet1AID
+  PrivateSubnet2ID:
+    Type: AWS::EC2::Subnet::Id
+    Default: subnet-086f8f7da69bdc21a
+    Description: vpc-producto-PrivateSubnet2AID
+
+Resources:
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Access to Lambda within VPC
+      VpcId: !Ref VPCId
+
+  RDSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Access to RDS within VPC
+      VpcId: !Ref VPCId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref LambdaSecurityGroup
+
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnet group for RDS
+      SubnetIds:
+        - !Ref PrivateSubnet1ID
+        - !Ref PrivateSubnet2ID
+
+  DBCluster:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      Engine: aurora-postgresql
+      EngineVersion: '13.4'
+      MasterUsername: "{{secrets.DB_USERNAME}}"
+      MasterUserPassword: "{{secrets.DB_PASSWORD}}"
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VpcSecurityGroupIds:
+        - !GetAtt RDSSecurityGroup.GroupId
+
+  DBInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBClusterIdentifier: !Ref DBCluster
+      DBInstanceClass: db.r5.large
+      Engine: aurora-postgresql
+      PubliclyAccessible: false
+
+  ECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: coca-cola-lambda
+
+  CocaColaLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CocaColaLambdaPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - s3:GetObject
+                  - rds-data:ExecuteStatement
+                Resource: '*' # is this okay?
+
+  CocaColaLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: coca-cola-lambda
+      Role: !GetAtt CocaColaLambdaExecutionRole.Arn
+      PackageType: Image
+      Code:
+        ImageUri: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/coca-cola-lambda:dev"
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1ID
+          - !Ref PrivateSubnet2ID
+      Environment:
+        Variables:
+          SECRET_NAME: "arn:aws:secretsmanager:us-east-1:123:secret:secreto/prueba-vLyw5W"
+          BUCKET_NAME: "{{secrets.BUCKET_NAME}}" # Secret from github actions
+          AWS_REGION: !Ref AWS::Region
+          DB_HOST: !GetAtt DBInstance.Endpoint.Address
+          DB_PORT: "3306"
+          DB_USER: "{{secrets.DB_USENAME}}" # Secret from github actions
+          DB_PASSWORD: "{{secrets.DB_PASSWORD}}" # Secret from github actions
+      MemorySize: 128
+      Timeout: 30
+
+  CocaColaLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt CocaColaLambdaFunction.Arn # The name or ARN of the Lambda function
+      Principal: apigateway.amazonaws.com
+
+  ApiGateway:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: client-api
+      CorsConfiguration: # Supported only for HTTP APIs (is a HTTP API?)
+        AllowMethods:
+          - GET
+          - POST
+
+  DevStage:
+    Type: 'AWS::ApiGatewayV2::Stage'
+    Properties:
+      ApiId: !Ref ApiGateway
+      StageName: dev
+
+  ApiGatewayIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref ApiGateway
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt CocaColaLambdaFunction.Arn
+      IntegrationMethod: POST # POST for Lambda integration (and GET ??)
+      PayloadFormatVersion: "2.0" # 1.0 and 2.0 are supported by lambda
+
+  CognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: user-pool
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          RequireUppercase: true
+
+  CognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: user-pool-client
+      UserPoolId: !Ref CognitoUserPool
+      GenerateSecret: false
+
+  CognitoAuthorizer:
+    Type: AWS::ApiGatewayV2::Authorizer
+    Properties:
+      Name: CognitoAuthorizer
+      ApiId: !Ref ApiGateway
+      AuthorizerType: COGNITO_USER_POOLS
+      IdentitySource: 
+        - "$request.header.Authorization"
+
+  ApiGatewayResourceGet:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ApiGateway
+      RouteKey: GET /clientes
+      AuthorizerId: !ref CognitoAuthorizer
+      Target: !Sub integrations/${ApiGatewayIntegration.ApiGatewayIntegrationId} # ?
+
+  ApiGatewayResourcePost:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ApiGateway
+      RouteKey: POST /clientes
+      AuthorizerId: !ref CognitoAuthorizer
+      Target: !Sub integrations/${ApiGatewayIntegration.ApiGatewayIntegrationId} # ?
+
+  ApiGatewayIamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: ""
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "apigateway.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: "/"
+      Policies:
+        - PolicyName: LambdaAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action: "lambda:*"
+                Resource: !GetAtt CocaColaLambdaFunction.Arn
+
+  ApiGatewayDeployment:
+    Type: AWS::ApiGatewayV2::Deployment
+    Properties:
+      ApiId: !Ref ApiGateway
+      StageName: !GetAtt DevStage.StageName
+
+  IPSet:
+    Type: AWS::WAFv2::IPSet
+    Properties:
+      Addresses:
+        - 198.3.123.4/32
+        - 200.4.34.67/32
+      IPAddressVersion: IPV4
+      Scope: REGIONAL
+      Name: IPSet
+
+  WebACL:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      DefaultAction:
+        Allow: {}
+      Scope: REGIONAL
+      VisibilityConfig:
+        CloudWatchMetricsEnabled: true
+        MetricName: WebACL
+        SampledRequestsEnabled: true
+      Name: WebACL
+      Rules:
+        - Name: AllowSpecificIPs
+          Priority: 1
+          Action:
+            Allow: {}
+          Statement:
+            IPSetReferenceStatement:
+              Arn: !Ref IPSet
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: AllowSpecificIPs
+            SampledRequestsEnabled: true
+
+  WebACLAssociation:
+    Type: AWS::WAFv2::WebACLAssociation
+    Properties:
+      ResourceArn: !Sub arn:aws:apigateway:${AWS::Region}::/restapis/${ApiGateway}/stages/dev # Format for an Amazon API Gateway REST API
+      WebACLArn: !GetAtt WebACL.Arn
+
+Outputs:
+  LambdaFunctionArn:
+    Description: ARN of the Lambda function
+    Value: !GetAtt CocaColaLambdaFunction.Arn
+
+  DBClusterEndpoint:
+    Description: 'The endpoint address of the Aurora PostgreSQL cluster'
+    Value: !GetAtt DBCluster.Endpoint.Address
+
+  ECRRepositoryUri:
+    Description: URI of the ECR repository
+    Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/coca-cola-lambda"
+
+  
