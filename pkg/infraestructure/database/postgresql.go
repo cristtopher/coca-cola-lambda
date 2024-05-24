@@ -41,3 +41,8 @@ func (p *PostgresAdapter) ListClients(ctx context.Context) ([]models.Client, err
 
 	return clients, nil
 }
+
+func (adapter *PostgresAdapter) CreateClient(ctx context.Context, client models.Client) error {
+	_, err := adapter.db.ExecContext(ctx, "INSERT INTO clients (name) VALUES ($1)", client.Name)
+	return err
+}
