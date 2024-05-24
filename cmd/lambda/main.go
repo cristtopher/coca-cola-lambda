@@ -1,34 +1,47 @@
 package main
 
 import (
-    "context"
-    "log"
-    "github.com/aws/aws-lambda-go/lambda"
-    "coca-cola-lambda/pkg/infraestructure/aws"
-    "coca-cola-lambda/pkg/infraestructure/database"
-    "coca-cola-lambda/pkg/domain/services"
-    "coca-cola-lambda/pkg/config"
+	"log"
+
+	"coca-cola-lambda/internal/adapters/postgres"
+	"coca-cola-lambda/internal/adapters/s3"
+	"coca-cola-lambda/internal/adapters/secretmanager"
+	"coca-cola-lambda/internal/config"
+	"coca-cola-lambda/internal/domain"
+	"coca-cola-lambda/internal/handlers"
+
+	"github.com/aws/aws-lambda-go/lambda"
+	"github.com/jmoiron/sqlx"
+	_ "github.com/lib/pq"
 )
 
 func main() {
-    // Cargar configuración
-    cfg, err := config.LoadConfig()
-    if err != nil {
-        log.Fatalf("Error loading config: %v", err)
-    }
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
+	}
 
-    // Inicializar adaptadores
-    s3Adapter := aws.NewS3Adapter(cfg.S3Bucket)
-    secretManagerAdapter := aws.NewSecretManagerAdapter()
-    dbAdapter := database.NewPostgresAdapter(cfg.DatabaseDSN)
+	db, err := sqlx.Connect("postgres", cfg.PostgresDSN)
+	if err != nil {
+		log.Fatalf("Failed to connect to PostgreSQL: %v", err)
+	}
+	defer db.Close()
 
-    // Inicializar servicio
-    clientService := services.NewClientService(s3Adapter, secretManagerAdapter, dbAdapter)
+	s3Adapter, err := s3.NewS3Adapter(cfg.AWSRegion, cfg.S3BucketName)
+	if err != nil {
+		log.Fatalf("Failed to initialize S3 adapter: %v", err)
+	}
 
-    // Inicializar Lambda handler
-    handler := func(ctx context.Context) error {
-        return clientService.HandleRequest(ctx)
-    }
+	secretManagerAdapter, err := secretmanager.NewSecretManagerAdapter(cfg.AWSRegion)
+	if err != nil {
+		log.Fatalf("Failed to initialize Secret Manager adapter: %v", err)
+	}
 
-    lambda.Start(handler)
+	clientRepository := postgres.NewPostgresClientRepository(db)
+
+	clientService := domain.NewClientService(clientRepository)
+
+	httpHandler := handlers.NewHTTPHandler(clientService, s3Adapter, secretManagerAdapter)
+
+	lambda.Start(httpHandler.HandleRequest)
 }
