@@ -1,0 +1,87 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: 'AWS::Serverless-2016-10-31'
+Resources:
+  ClientesFunction:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      Handler: cmd/lambda/main.go
+      Runtime: go1.x
+      CodeUri: .
+      Environment:
+        Variables:
+          PG_HOST: !Ref PGHost
+          PG_PORT: !Ref PGPort
+          PG_USER: !Ref PGUser
+          PG_PASSWORD: !Ref PGPassword
+          PG_DBNAME: !Ref PGDatabase
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+      Events:
+        ClientesGet:
+          Type: Api
+          Properties:
+            Path: /clientes
+            Method: get
+        ClientesPost:
+          Type: Api
+          Properties:
+            Path: /clientes
+            Method: post
+            
+  ApiGateway:
+    Type: 'AWS::Serverless::Api'
+    Properties:
+      StageName: Prod
+
+  LambdaSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: "Enable Lambda to access PostgreSQL"
+      VpcId: !Ref VPC
+
+  PrivateSubnet1:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: '10.0.1.0/24'
+      AvailabilityZone: 'us-east-1a'
+      MapPublicIpOnLaunch: false
+
+  PrivateSubnet2:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: '10.0.2.0/24'
+      AvailabilityZone: 'us-east-1b'
+      MapPublicIpOnLaunch: false
+
+Parameters:
+  PGHost:
+    Type: "host.docker.internal"
+    Description: The PostgreSQL host
+  PGPort:
+    Type: "5432"
+    Description: The PostgreSQL port
+    Default: '5432'
+  PGUser:
+    Type: "postgres"
+    Description: The PostgreSQL user
+  PGPassword:
+    Type: "123"
+    Description: The PostgreSQL password
+  PGDatabase:
+    Type: "clients"
+    Description: The PostgreSQL database name
+  VPC:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID to deploy resources
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet::Id
+    Description: Private Subnet ID 1
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet::Id
+    Description: Private Subnet ID 2

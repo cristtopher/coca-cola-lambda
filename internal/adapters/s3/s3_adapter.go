@@ -22,7 +22,6 @@ func NewS3Adapter(region, bucketName string) (*S3Adapter, error) {
 	}, nil
 }
 
-// Implement your methods to interact with S3
 func (s *S3Adapter) ListObjects() ([]string, error) {
 	input := &s3.ListObjectsV2Input{
 		Bucket: aws.String(s.bucketName),
